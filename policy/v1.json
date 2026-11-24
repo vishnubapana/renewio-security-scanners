@@ -1,0 +1,26 @@
+{
+  "policy_version": "v1",
+  "scanner_bundle_version": "1.0.0",
+  "minimum_release_age_days": 14,
+  "auto_renew": {
+    "require_assessment": ["checks_passed"],
+    "allow_with_valid_approval": true
+  },
+  "elevated_severities": ["medium", "high", "critical"],
+  "non_override_scanners": ["identity", "malware"],
+  "report_ttl_days": 30,
+  "offline_grace_hours": 72,
+  "scanners": {
+    "identity": { "enabled": true, "required": true },
+    "age_policy": { "enabled": true, "required": false },
+    "gitleaks": { "enabled": true, "required": false },
+    "semgrep": { "enabled": true, "required": false },
+    "osv_custom_spm": { "enabled": true, "required": false },
+    "osv_scanner": { "enabled": true, "required": false },
+    "ipa_light": { "enabled": true, "required": false },
+    "release_diff": { "enabled": false, "required": false },
+    "mobsf": { "enabled": false, "required": false },
+    "virustotal": { "enabled": false, "required": false },
+    "ai_reviewer": { "enabled": false, "required": false }
+  }
+}

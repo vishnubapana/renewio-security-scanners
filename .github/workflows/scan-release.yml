@@ -1,0 +1,180 @@
+name: Scan GitHub IPA release
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Supabase scan_jobs.id
+        required: true
+        type: string
+      github_owner:
+        required: true
+        type: string
+      github_repo:
+        required: true
+        type: string
+      release_tag:
+        required: true
+        type: string
+      source_commit:
+        required: false
+        type: string
+        default: ""
+      asset_id:
+        required: false
+        type: string
+        default: ""
+      expected_sha256:
+        required: true
+        type: string
+      policy_version:
+        required: true
+        type: string
+        default: v1
+      callback_url:
+        description: Supabase submit-report function URL
+        required: true
+        type: string
+      published_at:
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scan-${{ inputs.expected_sha256 }}-${{ inputs.policy_version }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout scanners
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download release IPA and source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ inputs.github_owner }}
+          REPO: ${{ inputs.github_repo }}
+          TAG: ${{ inputs.release_tag }}
+          ASSET_ID: ${{ inputs.asset_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          # Source archive (no git clone execute) — prefer commit if provided
+          REF="${{ inputs.source_commit }}"
+          if [[ -z "$REF" ]]; then REF="$TAG"; fi
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$OWNER/$REPO/zipball/$REF" -o work/source.zip
+          mkdir -p work/source
+          unzip -q work/source.zip -d work/source-unz
+          # zipball has a single top-level folder
+          mv work/source-unz/* work/source
+
+          # Resolve IPA asset
+          REL_JSON=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$OWNER/$REPO/releases/tags/$TAG")
+          echo "$REL_JSON" > work/release.json
+          python3 <<'PY'
+          import json, os, subprocess, sys
+          from pathlib import Path
+          rel = json.loads(Path("work/release.json").read_text())
+          asset_id = os.environ.get("ASSET_ID") or ""
+          assets = rel.get("assets") or []
+          chosen = None
+          if asset_id:
+              chosen = next((a for a in assets if str(a.get("id")) == str(asset_id)), None)
+          if chosen is None:
+              ipas = [a for a in assets if str(a.get("name","")).lower().endswith(".ipa")]
+              unsigned = [a for a in ipas if "unsigned" in a["name"].lower()]
+              chosen = (unsigned or ipas or [None])[0]
+          if not chosen:
+              print("No IPA asset on release", file=sys.stderr)
+              sys.exit(1)
+          Path("work/asset_meta.json").write_text(json.dumps(chosen, indent=2))
+          url = chosen["url"]
+          name = chosen["name"]
+          Path("work/asset_name.txt").write_text(name)
+          subprocess.check_call([
+              "curl", "-fsSL", "-L",
+              "-H", f"Authorization: Bearer {os.environ['GH_TOKEN']}",
+              "-H", "Accept: application/octet-stream",
+              url, "-o", f"work/{name}",
+          ])
+          print(name)
+          PY
+          echo "ASSET_NAME=$(cat work/asset_name.txt)" >> "$GITHUB_ENV"
+          PUB=$(python3 -c "import json; print(json.load(open('work/release.json')).get('published_at') or '')")
+          echo "PUBLISHED_AT=$PUB" >> "$GITHUB_ENV"
+
+      - name: Run adapters
+        run: |
+          set -euo pipefail
+          mkdir -p work/adapters
+          IPA="work/$ASSET_NAME"
+          python3 adapters/identity.py "$IPA" "${{ inputs.expected_sha256 }}" work/adapters/identity.json
+          # Fail hard on hash mismatch
+          python3 -c "import json,sys; d=json.load(open('work/adapters/identity.json')); sys.exit(0 if d.get('ok') else 1)"
+
+          PUB_AT="${{ inputs.published_at }}"
+          if [[ -z "$PUB_AT" ]]; then PUB_AT="${PUBLISHED_AT:-}"; fi
+          python3 adapters/age_policy.py "$PUB_AT" work/adapters/age_policy.json
+          bash adapters/gitleaks.sh work/source work/adapters/gitleaks.json || true
+          bash adapters/semgrep.sh work/source work/adapters/semgrep.json || true
+          python3 adapters/osv_custom_spm.py work/source work/adapters/osv_custom_spm.json
+          bash adapters/osv_scanner.sh work/source work/adapters/osv_scanner.json || true
+          python3 adapters/ipa_light.py "$IPA" work/adapters/ipa_light.json
+
+          ACTUAL=$(python3 -c "import json; print(json.load(open('work/adapters/identity.json'))['ipa_sha256'])")
+          export ACTUAL PUB_AT
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          meta = json.loads(Path("work/asset_meta.json").read_text())
+          pub = os.environ.get("PUB_AT") or None
+          commit = """${{ inputs.source_commit }}""".strip() or None
+          artifact = {
+            "ipa_sha256": os.environ["ACTUAL"],
+            "github_owner": """${{ inputs.github_owner }}""",
+            "github_repo": """${{ inputs.github_repo }}""",
+            "release_tag": """${{ inputs.release_tag }}""",
+            "source_commit": commit,
+            "asset_id": str(meta.get("id")),
+            "asset_name": meta.get("name"),
+            "published_at": pub,
+          }
+          Path("work/artifact.json").write_text(json.dumps(artifact, indent=2))
+          PY
+
+          POLICY="policy/${{ inputs.policy_version }}.json"
+          if [[ ! -f "$POLICY" ]]; then POLICY="policy/v1.json"; fi
+          python3 normalize/normalize_report.py \
+            --job-id "${{ inputs.job_id }}" \
+            --policy "$POLICY" \
+            --artifact-json work/artifact.json \
+            --adapter-dir work/adapters \
+            --out work/report.json
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report-${{ inputs.job_id }}
+          path: |
+            work/report.json
+            work/report.sha256
+            work/adapters/
+
+      - name: Submit report to Supabase
+        env:
+          SUBMIT_REPORT_HMAC_SECRET: ${{ secrets.SUBMIT_REPORT_HMAC_SECRET }}
+        run: |
+          python3 scripts/submit_report.py work/report.json "${{ inputs.callback_url }}"

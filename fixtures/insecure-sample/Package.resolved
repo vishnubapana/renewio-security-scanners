@@ -1,0 +1,14 @@
+{
+  "pins": [
+    {
+      "identity": "github.com/example/VulnerableKit",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/example/VulnerableKit.git",
+      "state": {
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "version": "1.0.0"
+      }
+    }
+  ],
+  "version": 2
+}

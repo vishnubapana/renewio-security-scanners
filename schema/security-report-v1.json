@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://renewio.app/schemas/security-report-v1.json",
+  "title": "RenewioSecurityReport",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "job_id",
+    "artifact",
+    "policy_version",
+    "scanner_bundle_version",
+    "scanners_ran",
+    "assessment_status",
+    "findings",
+    "limitations",
+    "generated_at"
+  ],
+  "properties": {
+    "schema_version": { "const": "1" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "artifact": {
+      "type": "object",
+      "required": ["ipa_sha256", "github_owner", "github_repo", "release_tag"],
+      "properties": {
+        "ipa_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "github_owner": { "type": "string" },
+        "github_repo": { "type": "string" },
+        "release_tag": { "type": "string" },
+        "source_commit": { "type": ["string", "null"] },
+        "asset_id": { "type": ["string", "null"] },
+        "asset_name": { "type": ["string", "null"] },
+        "published_at": { "type": ["string", "null"] }
+      }
+    },
+    "policy_version": { "type": "string" },
+    "scanner_bundle_version": { "type": "string" },
+    "scanners_ran": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "assessment_status": {
+      "type": "string",
+      "enum": ["incomplete", "checks_passed", "review_required", "blocked"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "scanner", "severity", "title", "override_eligible"],
+        "properties": {
+          "id": { "type": "string" },
+          "scanner": { "type": "string" },
+          "severity": {
+            "type": "string",
+            "enum": ["unknown", "low", "medium", "high", "critical"]
+          },
+          "title": { "type": "string" },
+          "summary": { "type": "string" },
+          "evidence": { "type": "object" },
+          "override_eligible": { "type": "boolean" }
+        }
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "age": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["eligible", "too_new", "unknown", "not_applicable"]
+        },
+        "age_days": { "type": ["integer", "null"] },
+        "required_days": { "type": "integer" }
+      }
+    },
+    "generated_at": { "type": "string", "format": "date-time" }
+  }
+}
